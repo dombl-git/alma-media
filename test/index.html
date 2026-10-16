@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Paper Edit · first test</title>
+    <!--
+      Phase 9's first test (BRIEF-2 §12, Phase 9 check 1). Published with alma-media, so it runs
+      from the real address, next to the clip it seeks in. It holds no token and nothing from
+      ALMA: the token is pasted in by the director and lives only in this page's memory; the
+      200 KB "cut" is made up here. Its files in the project repository go in test/ and are
+      deleted at the end.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --ink: #1d1c1a;
+        --muted: #67645d;
+        --surface: #f6f4ef;
+        --line: #d8d4ca;
+        --accent: #2a78d6;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ink: #ecebe7;
+          --muted: #97948d;
+          --surface: #1b1a18;
+          --line: #3a3833;
+          --accent: #3987e5;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--surface);
+        color: var(--ink);
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 8px;
+      }
+      p {
+        color: var(--muted);
+        margin: 0 0 16px;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      label {
+        display: grid;
+        gap: 4px;
+        font-weight: 600;
+      }
+      input {
+        font: inherit;
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: transparent;
+        color: inherit;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        justify-self: start;
+        padding: 6px 14px;
+        border: 0;
+        border-radius: 4px;
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #status {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      pre {
+        white-space: pre-wrap;
+        font:
+          13px/1.45 ui-monospace,
+          monospace;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 12px;
+        min-height: 4em;
+      }
+      video {
+        width: 320px;
+        max-width: 100%;
+        display: block;
+        margin-top: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Paper Edit · first test</h1>
+      <p>
+        Measures how fast saves and loads through GitHub are, and seeking in a 60 MB clip served
+        from this site. It takes two or three minutes. The token stays in this page's memory only
+        and is forgotten when the test ends or you close the page. The test's files in the project
+        repository go in a test folder and are deleted at the end.
+      </p>
+      <form id="form">
+        <label>GitHub account <input id="owner" autocomplete="off" required /></label>
+        <label>Project repository <input id="repo" value="alma-data" required /></label>
+        <label
+          >Token <input id="token" type="password" autocomplete="off" spellcheck="false" required
+        /></label>
+        <button id="run">Run the test</button>
+      </form>
+      <p><button id="clip-only" type="button">Test the clip only</button> (no token needed)</p>
+      <p id="status" role="status"></p>
+      <pre id="out" aria-label="Results"></pre>
+      <button id="copy" hidden>Copy results</button>
+      <video id="video" muted playsinline preload="metadata"></video>
+    </main>
+
+    <script type="module">
+      const API = 'https://api.github.com'
+      const CLIP = new URL('seek-60mb.mp4', location.href).href
+      const FPS = 24
+      const BITS = 14
+      const AUTHOR = { name: 'Paper Edit test', email: 'test@paper-edit.invalid' }
+
+      const $ = (id) => document.getElementById(id)
+      const out = $('out')
+      const lines = []
+      let token = ''
+
+      if (location.hostname.endsWith('.github.io'))
+        $('owner').value = location.hostname.split('.')[0]
+
+      const log = (s = '') => {
+        lines.push(s)
+        out.textContent = lines.join('\n')
+      }
+      const status = (s) => ($('status').textContent = s)
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const median = (xs) => {
+        if (!xs.length) return NaN
+        const s = [...xs].sort((a, b) => a - b)
+        const m = s.length >> 1
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+      }
+      const ms = (x) => `${Math.round(x)} ms`
+      const spread = (xs) =>
+        `median ${ms(median(xs))} (fastest ${ms(Math.min(...xs))}, slowest ${ms(Math.max(...xs))})`
+      const num = (h) => (h === null || h === '' ? null : Number(h))
+
+      /** One request to GitHub's API, timed. Never logs the token. */
+      async function gh(method, path, { body, headers = {}, raw = false } = {}) {
+        const t0 = performance.now()
+        const res = await fetch(API + path, {
+          method,
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            ...(body ? { 'Content-Type': 'application/json' } : {}),
+            ...headers,
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        })
+        const text = res.status === 304 || res.status === 204 ? '' : await res.text()
+        const msTaken = performance.now() - t0
+        let json = null
+        if (!raw && text) {
+          try {
+            json = JSON.parse(text)
+          } catch {
+            json = null
+          }
+        }
+        return {
+          status: res.status,
+          ms: msTaken,
+          json,
+          text,
+          etag: res.headers.get('etag'),
+          remaining: num(res.headers.get('x-ratelimit-remaining')),
+        }
+      }
+
+      /** UTF-8 text as base64, in chunks (a 200 KB string is too long to spread at once). */
+      function b64(text) {
+        const bytes = new TextEncoder().encode(text)
+        let bin = ''
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+        }
+        return btoa(bin)
+      }
+
+      /** A made-up cut of about 200 KB, pretty-printed like Paper Edit's files. Not ALMA. */
+      function madeUpCut(rev) {
+        const shots = []
+        let text = ''
+        for (let i = 0; text.length < 200_000; i++) {
+          shots.push({
+            id: `sh${String(i).padStart(3, '0')}`,
+            lengthF: 48 + ((i * 37 + rev * 11) % 300),
+            size: ['WS', 'MS', 'CU', 'ECU'][i % 4],
+            tags: i % 5 ? [] : ['POV'],
+            description: `Test shot ${i}, revision ${rev}`,
+            notes: 'A line of made-up notes to give the shot some weight.',
+          })
+          if (i % 50 === 49) text = JSON.stringify({ test: 'Paper Edit', rev, shots }, null, 2)
+        }
+        return `${text}\n`
+      }
+
+      const once = (el, ev, timeout = 30_000) =>
+        new Promise((resolve, reject) => {
+          const t = setTimeout(
+            () => reject(new Error(`no ${ev} after ${timeout / 1000} s`)),
+            timeout,
+          )
+          el.addEventListener(
+            ev,
+            () => {
+              clearTimeout(t)
+              resolve()
+            },
+            { once: true },
+          )
+        })
+
+      /** Waits until the seeked frame is on screen (at most half a second: hidden pages don't draw). */
+      const frameShown = (v) =>
+        new Promise((resolve) => {
+          const t = setTimeout(resolve, 500)
+          const done = () => {
+            clearTimeout(t)
+            resolve()
+          }
+          if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(done)
+          else requestAnimationFrame(() => requestAnimationFrame(done))
+        })
+
+      /** The frame number drawn as bars along the top of the clip (make-clip.mjs). */
+      function readBars(v) {
+        const c = document.createElement('canvas')
+        c.width = 1280
+        c.height = 48
+        const ctx = c.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(v, 0, 0, 1280, 48, 0, 0, 1280, 48)
+        const row = ctx.getImageData(0, 24, 1280, 1).data
+        let n = 0
+        for (let i = 0; i < BITS; i++) {
+          const x = Math.floor(((i + 0.5) * 1280) / BITS)
+          n = n * 2 + (row[x * 4] > 128 ? 1 : 0)
+        }
+        return n
+      }
+
+      async function apiTest(owner, repo) {
+        const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
+        const run = Date.now().toString(36)
+        const cutPath = `${base}/contents/test/cut-${run}.json`
+        const notePath = (n) => `${base}/contents/test/notes-${run}/${n}.json`
+        const made = [] // files to delete at the end: [path, sha]
+
+        status('Opening the repository…')
+        let r = await gh('GET', base)
+        if (r.status !== 200) {
+          throw new Error(
+            `This token can't open ${owner}/${repo} (GitHub answered ${r.status}). Check the account, the repository's name and the token's access.`,
+          )
+        }
+        log(
+          `Repository ${r.json.full_name}: ${r.json.private ? 'private' : 'PUBLIC (it should be private)'}`,
+        )
+        const startLeft = r.remaining
+        log(`Requests left this hour at the start: ${startLeft ?? 'not given'}`)
+        log()
+
+        try {
+          // Saves: create the file, then save it 10 times, each against the version before
+          status('Saving a 200 KB cut as a commit, 10 times…')
+          const size = madeUpCut(0).length
+          let sha = null
+          let firstSha = null
+          const saves = []
+          const lags = []
+          const clock = []
+          for (let i = 0; i <= 10; i++) {
+            const t0 = Date.now()
+            r = await gh('PUT', cutPath, {
+              body: {
+                message: `Paper Edit test: save ${i}`,
+                content: b64(madeUpCut(i)),
+                ...(sha ? { sha } : {}),
+                author: AUTHOR,
+              },
+            })
+            const t1 = Date.now()
+            if (r.status !== 200 && r.status !== 201) {
+              throw new Error(
+                `Save ${i} failed: GitHub answered ${r.status} ${r.json?.message ?? ''}`,
+              )
+            }
+            sha = r.json.content.sha
+            if (i === 0) {
+              firstSha = sha
+              made.push(['cut', cutPath, () => sha])
+            } else saves.push(r.ms)
+            const date = Date.parse(r.json.commit?.committer?.date ?? '')
+            if (!Number.isNaN(date)) clock.push(date - (t0 + t1) / 2)
+            // How long until a read shows the version just written
+            const w0 = performance.now()
+            let tries = 0
+            for (; tries < 40; tries++) {
+              const g = await gh('GET', cutPath)
+              if (g.json?.sha === sha) break
+              await sleep(250)
+            }
+            lags.push({ ms: performance.now() - w0, tries: tries + 1 })
+          }
+          log(`Saving a ${Math.round(size / 1000)} KB cut as a commit: ${spread(saves)}`)
+          const stale = lags.filter((l) => l.tries > 1).length
+          log(
+            `Reading it back straight after each save: ${spread(lags.map((l) => l.ms))}; ${stale ? `${stale} of ${lags.length} first showed the older version` : 'always the new version at once'}`,
+          )
+          log(
+            `This computer's clock against GitHub's: ${clock.length ? `GitHub is ${median(clock) >= 0 ? 'ahead' : 'behind'} by about ${(Math.abs(median(clock)) / 1000).toFixed(1)} s (commit times are to the second)` : 'not given'}`,
+          )
+
+          // Loads
+          status('Loading it, 10 times…')
+          const loads = []
+          let bytes = 0
+          for (let i = 0; i < 10; i++) {
+            r = await gh('GET', cutPath, { raw: true })
+            if (r.status !== 200) throw new Error(`Load ${i} failed: GitHub answered ${r.status}`)
+            loads.push(r.ms)
+            bytes = r.text.length
+          }
+          log(`Loading the ${Math.round(bytes / 1000)} KB cut: ${spread(loads)}`)
+
+          // A save against an older version must be refused
+          status('Sending a save against an older version…')
+          r = await gh('PUT', cutPath, {
+            body: {
+              message: 'Paper Edit test: a stale save (must be refused)',
+              content: b64(madeUpCut(99)),
+              sha: firstSha,
+              author: AUTHOR,
+            },
+          })
+          log(
+            `A save against an older version: ${r.status === 409 ? 'refused (409), nothing overwritten' : `answered ${r.status}: NOT REFUSED`}`,
+          )
+          if (r.status === 200) sha = r.json.content.sha
+          log()
+
+          // Checks that find nothing new
+          status('Checking for changes when nothing has changed…')
+          const conditional = async (label, path) => {
+            const first = await gh('GET', path)
+            const again = []
+            for (let k = 0; k < 5; k++) {
+              again.push(await gh('GET', path, { headers: { 'If-None-Match': first.etag ?? '' } }))
+            }
+            const codes = [...new Set(again.map((a) => a.status))].join(', ')
+            const left = again.at(-1).remaining
+            const free =
+              first.remaining !== null && left !== null
+                ? left === first.remaining
+                  ? 'free (requests left unchanged)'
+                  : `COUNTED (requests left ${first.remaining} → ${left})`
+                : 'requests left not given'
+            log(
+              `Check ${label}: ${first.etag ? '' : 'no ETag! '}5 checks answered ${codes}, ${spread(again.map((a) => a.ms))}; ${free}`,
+            )
+          }
+          await conditional('the cut file', cutPath)
+          await conditional('a folder', `${base}/contents/test`)
+          await conditional('the latest commit', `${base}/commits?per_page=1`)
+          log()
+
+          // Two notes at the same moment
+          status('Committing two notes at the same moment…')
+          const put = (n) =>
+            gh('PUT', notePath(n), {
+              body: {
+                message: `Paper Edit test: note ${n}`,
+                content: b64(`${JSON.stringify({ note: n }, null, 2)}\n`),
+                author: AUTHOR,
+              },
+            })
+          const both = await Promise.all(['a', 'b'].map(put))
+          const firstCodes = both.map((x) => x.status)
+          for (const [i, n] of ['a', 'b'].entries()) {
+            if (both[i].status !== 201) {
+              await sleep(500)
+              both[i] = await put(n)
+            }
+            if (both[i].status === 201)
+              made.push(['note', notePath(n), () => both[i].json.content.sha])
+          }
+          const landed = both.filter((x) => x.status === 201).length
+          log(
+            `Two notes at the same moment: first answers ${firstCodes.join(' and ')}; ${landed} of 2 landed${firstCodes.some((c) => c !== 201) ? ' after one retry' : ''}`,
+          )
+        } finally {
+          // Leave nothing behind
+          status('Deleting the test files…')
+          let deleted = 0
+          for (const [, path, shaOf] of made.reverse()) {
+            const d = await gh('DELETE', path, {
+              body: { message: 'Paper Edit test: clean up', sha: shaOf(), author: AUTHOR },
+            })
+            if (d.status === 200) deleted += 1
+          }
+          log(`Test files deleted: ${deleted} of ${made.length}`)
+          const end = await gh('GET', base)
+          if (startLeft !== null && end.remaining !== null) {
+            log(
+              `Requests left this hour at the end: ${end.remaining} (this test used ${startLeft - end.remaining})`,
+            )
+          }
+        }
+      }
+
+      async function clipTest() {
+        log()
+        status('Asking the clip for a range of bytes…')
+        const t0 = performance.now()
+        const rr = await fetch(CLIP, {
+          headers: { Range: 'bytes=1000000-1000999' },
+          cache: 'no-store',
+        })
+        const got = (await rr.arrayBuffer()).byteLength
+        log(
+          `Clip ${CLIP.split('/').pop()}: a range of bytes answered ${rr.status}${rr.status === 206 ? ' (ranges work)' : ' (RANGES NOT USED)'}, ${got} bytes in ${ms(performance.now() - t0)}`,
+        )
+        const total = rr.headers.get('content-range')?.split('/')[1]
+        if (total) log(`Clip size: ${(Number(total) / 1e6).toFixed(1)} MB`)
+
+        status('Seeking in the clip…')
+        const v = $('video')
+        const m0 = performance.now()
+        v.src = CLIP
+        await once(v, 'loadedmetadata')
+        log(`Clip ready to seek (its index read): ${ms(performance.now() - m0)}`)
+        let readable = true
+        for (const pass of ['first time', 'second time']) {
+          const times = []
+          const wrong = []
+          for (const sec of [5, 90, 175]) {
+            const frame = sec * FPS
+            const s0 = performance.now()
+            v.currentTime = (frame + 0.5) / FPS
+            await once(v, 'seeked')
+            // The frame is decoded when "seeked" fires; drawing it can wait (a hidden page never draws)
+            times.push(performance.now() - s0)
+            await frameShown(v)
+            if (readable) {
+              try {
+                const shown = readBars(v)
+                if (shown !== frame) wrong.push(`${frame} showed ${shown}`)
+              } catch {
+                readable = false
+              }
+            }
+          }
+          log(
+            `Seeking to 0:05, 1:30 and 2:55, ${pass}: ${times.map(ms).join(', ')}${readable ? (wrong.length ? `; WRONG FRAME: ${wrong.join('; ')}` : '; the right frame each time') : ''}`,
+          )
+        }
+        log(
+          `Reading the clip's frames into a picture (the reel needs it): ${readable ? 'works' : 'BLOCKED'}`,
+        )
+      }
+
+      $('form').addEventListener('submit', async (e) => {
+        e.preventDefault()
+        token = $('token').value.trim()
+        $('token').value = ''
+        $('run').disabled = true
+        $('copy').hidden = true
+        lines.length = 0
+        log(`Paper Edit first test · ${new Date().toISOString()}`)
+        log(`Browser: ${navigator.userAgent}`)
+        log()
+        try {
+          await apiTest($('owner').value.trim(), $('repo').value.trim())
+        } catch (err) {
+          log(`Stopped: ${err.message}`)
+        } finally {
+          token = ''
+        }
+        try {
+          await clipTest()
+        } catch (err) {
+          log(`Clip test stopped: ${err.message}`)
+        }
+        status('Done. Copy the results and paste them to Claude.')
+        $('copy').hidden = false
+        $('run').disabled = false
+      })
+
+      $('clip-only').addEventListener('click', async () => {
+        $('clip-only').disabled = true
+        $('copy').hidden = true
+        lines.length = 0
+        log(`Paper Edit clip test · ${new Date().toISOString()}`)
+        log(`Browser: ${navigator.userAgent}`)
+        try {
+          await clipTest()
+        } catch (err) {
+          log(`Clip test stopped: ${err.message}`)
+        }
+        status('Done.')
+        $('copy').hidden = false
+        $('clip-only').disabled = false
+      })
+
+      $('copy').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(lines.join('\n'))
+        status('Copied.')
+      })
+    </script>
+  </body>
+</html>
