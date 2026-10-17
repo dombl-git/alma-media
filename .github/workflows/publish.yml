@@ -1,0 +1,47 @@
+# The clips' site (Paper Edit, BRIEF-2 §9.2). On every push to main: checks each clip at the top of
+# this repository, makes its thumbnail and timeline strip, writes manifest.json, and publishes them
+# to GitHub Pages (Settings ▸ Pages ▸ Source: GitHub Actions). It writes nothing back to the
+# repository. If a clip can't be used, the run fails naming it, and the site stays as it was.
+#
+# Lives in alma-media as .github/workflows/publish.yml, with .github/media-site/build-site.mjs.
+# Both come from tools/media-site/ in Paper Edit's code.
+name: Publish clips
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Install ffmpeg
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg)
+
+      - name: Check the clips and build the site
+        run: >-
+          node .github/media-site/build-site.mjs . _site
+          --previous "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+
+      - uses: actions/upload-pages-artifact@v3.0.1
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4.0.5
